@@ -372,9 +372,10 @@ class Ground_Controller(PlayerController):
             self.guis.remove(button.gui)
 
         if GUI.find_gui(self.guis, "vehicles") is None:
-            self.guis.append(GUI("vehicles", (5, 1), box_size=(50, 50), content=[
+            self.guis.append(GUI("vehicles", (6, 1), box_size=(50, 50), content=[
                 ("man_aa.png", button_callable, [ManAA]),
                 ("vads.png", button_callable, [Vads]),
+                ("s300.png", button_callable, [Long_Range_SAM]),
                 ("grad.png", button_callable, [Grad]),
                 ("rad.png", button_callable, [Search_Radar]),
                 ("none.png", button_callable, [None])
@@ -753,6 +754,7 @@ class Missile(pygame.sprite.Sprite):
         pygame.sprite.Sprite.__init__(self)
         self.controller = controller
         self.pos = pygame.math.Vector2(pos)
+        self.size = 1.0
         self.stored = pygame.transform.rotozoom(
             pygame.image.load('Assets/Vehicles/man_aa_missile.png').convert_alpha(),
             0, 0.1)
@@ -806,7 +808,7 @@ class Missile(pygame.sprite.Sprite):
             self.speed -= abs(turn) / 50
 
     def update_image(self):
-        self.image = pygame.transform.rotate(self.stored, self.angle)
+        self.image = pygame.transform.rotozoom(self.stored, self.angle, self.size)
         self.rect = self.image.get_rect(center=self.pos)
         self.mask = pygame.mask.from_surface(self.image)
 
@@ -1279,18 +1281,17 @@ class Radar(Vehicle, ABC):
     def __init__(self, controller):
         super(Radar, self).__init__(controller)
         self.controller.team.radars.add(self)
+        self.range = 700
 
     def detect_target(self):
-        max_ranges = {Sidewinder: 500, Harm: 500, Player: 800}
-
-        def singe_target_detect(target, limit=1000):
+        def singe_target_detect(target, limit):
             if dis_to(self.rect.center, target.rect.center) <= limit:
                 self.controller.team.radar_targets.add(target)
 
         for plane in self.controller.team.enemy_team.plane.sprites():
-            singe_target_detect(plane, limit=max_ranges[type(plane)])
+            singe_target_detect(plane, limit=self.range)
         for ordnance in self.controller.team.enemy_team.ordnances.sprites():
-            singe_target_detect(ordnance, limit=max_ranges[type(ordnance)])
+            singe_target_detect(ordnance, limit=self.range)
 
 
 class Search_Radar(Radar):
@@ -1313,7 +1314,35 @@ class Grad(Vehicle):
     __slots__ = ('image', 'rect')
     idle = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/grad.png').convert_alpha(), 0, 0.1)
 
-    class Grad_Missile(Missile):
+    class Missile(pygame.sprite.Sprite):
+        def __init__(self, pos):
+            super().__init__()
+            self.image = pygame.image.load('Assets/bullet.png').convert_alpha()
+            self.rect = self.image.get_rect(center=pos)
+
+        def update(self):
+            self.rect.x += 1
+
+    def __init__(self, pos, controller):
+        super().__init__(controller)
+        self.image = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/grad.png').convert_alpha(), 0,
+                                               0.1)
+        self.rect = self.image.get_rect(center=pos)
+        self.mask = pygame.mask.from_surface(self.image)
+        self.fire_timer = 0
+        non_traceables.add(Grad.Missile(self.rect.center))
+
+    def update(self):
+        self.spawn_gui_on_click()
+        self.take_damage(35)
+        self.fire_timer += 1
+
+
+class Long_Range_SAM(Vehicle):
+    __slots__ = ('image', 'rect')
+    idle = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/s300.png').convert_alpha(), 0, 0.35)
+
+    class Long_Range_Missile(Missile):
         def __init__(self, controller: Ground_Controller, pos):
             radar_targets = controller.team.radar_targets.sprites()
             self.target = random.choice(radar_targets) if radar_targets else None
@@ -1347,16 +1376,19 @@ class Grad(Vehicle):
 
     def __init__(self, pos, controller):
         super().__init__(controller)
-        self.image = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/grad.png').convert_alpha(), 0,
-                                               0.1)
+        self.size = 0.35
+        self.image = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/s300.png').convert_alpha(), 0,
+                                               self.size)
         self.rect = self.image.get_rect(center=pos)
         self.mask = pygame.mask.from_surface(self.image)
         self.fire_timer = 0
+        self.reload_time = 180
+        self.range = 650
 
         self.controller.team.air_defences.add(self)
 
     def launch(self):
-        non_traceables.add(self.Grad_Missile(self.controller, self.rect.center))
+        non_traceables.add(self.Long_Range_Missile(self.controller, self.rect.center))
 
     def update(self):
         self.spawn_gui_on_click()
@@ -1483,10 +1515,10 @@ class Team:
     def closest_air_defence(self, target):
         sorted_defences = list(sorted(self.air_defences.sprites(),
                                       key=lambda d: dis_to(d.rect.center, target.rect.center)))
-        if len(sorted_defences) > 0:
-            return sorted_defences[0]
-        else:
-            return None
+        for a_d in sorted_defences:
+            if dis_to(a_d.rect.center, target.rect.center) <= a_d.range:
+                return a_d
+        return None
 
     def draw(self):
         self.vehicles.draw(screen)
@@ -1506,7 +1538,7 @@ class Team:
         for target in self.radar_targets:
             air_defence = self.closest_air_defence(target)
             if air_defence is not None:
-                if air_defence.fire_timer > 180:
+                if air_defence.fire_timer > air_defence.reload_time:
                     air_defence.launch()
                     air_defence.fire_timer = 0
 
