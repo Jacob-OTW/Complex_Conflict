@@ -2,7 +2,6 @@ import pygame
 import math
 import random
 import sys
-import gc
 from typing import Any
 from DataStructs import LinkedCircle
 from abc import ABC, abstractmethod
@@ -87,7 +86,7 @@ def gimbal_limit(self, angle: int | float, limit: int | float) -> bool:
     return abs(((self.angle - angle) + 180) % 360 - 180) > limit
 
 
-def closest_target(self, sprites: list, max_range=250, angle_limit=0, exclude=None):
+def closest_target(self, sprites: list, max_range: int | float = 250, angle_limit=0, exclude=None):
     compare = {max_range: None}
     for sprite in sprites:
         if sprite is not exclude:
@@ -156,7 +155,7 @@ class GUI(pygame.sprite.Sprite):
             self.callback_args = on_click_args
             self.sub_gui = None
             self.cache = None
-            self.image = pygame.transform.scale(pygame.image.load(f"Assets/buttons/{filepath}").convert_alpha(),
+            self.image = pygame.transform.scale(pygame.image.load(f"Assets/GUI_Buttons/{filepath}").convert_alpha(),
                                                 self.gui.box_size)
             self.rect = self.image.get_rect(topleft=pygame.math.Vector2(gui.rect.topleft) + relative_pos)
 
@@ -269,7 +268,7 @@ class UI:
     class Button(pygame.sprite.Sprite):
         def __init__(self, icon: str, button_callable: callable, *groups, args=(), size=(200, 100), **kwargs):
             super().__init__()
-            load = pygame.image.load(f"Assets/settings_buttons/{icon}.png").convert_alpha()
+            load = pygame.image.load(f"Assets/Menu_Buttons/{icon}.png").convert_alpha()
             self.image = pygame.transform.scale(load, size)
             self.rect = self.image.get_rect(**kwargs)
 
@@ -285,7 +284,7 @@ class UI:
     class Display(pygame.sprite.Sprite):
         def __init__(self, *groups, **kwargs):
             super().__init__()
-            self.stored = pygame.image.load(f"Assets/settings_buttons/emtpy.png").convert_alpha()
+            self.stored = pygame.image.load(f"Assets/Menu_Buttons/emtpy.png").convert_alpha()
             self.image = self.render_image(15)
             self.rect = self.image.get_rect(**kwargs)
 
@@ -319,7 +318,7 @@ class UI:
 class Pointer(pygame.sprite.Sprite):
     def __init__(self, main_id, group, **kwargs):
         super(Pointer, self).__init__()
-        self.joystick = Xbox_Controller(main_id=main_id, rumble_id=main_id)
+        self.joystick = Xbox_Controller(main_id=main_id)
         self.image = pygame.transform.rotozoom(pygame.image.load("Assets/pointer.png").convert_alpha(), 0, 0.05)
         self.rect = self.image.get_rect(**kwargs)
         self.mask = pygame.mask.from_surface(self.image)
@@ -366,7 +365,7 @@ class Ground(pygame.sprite.Sprite, ABC):
 
 
 class Main_Island(Ground):
-    def __init__(self, team):
+    def __init__(self, team, ground_group):
         pos_args = {"topleft": (0, 0)} if team.team_num == 0 else {"topright": (screen.get_width(), 0)}
         super().__init__(team, "Assets/Ground/Island.png", **pos_args)
 
@@ -376,7 +375,7 @@ class Main_Island(Ground):
 
 
 class Small_Island(Ground):
-    def __init__(self, team, pos):
+    def __init__(self, team, pos, ground_group):
         super(Small_Island, self).__init__(team, "Assets/Ground/small_island.png", image_size=0.25, center=pos)
         self.timer = 0
 
@@ -398,7 +397,7 @@ class Small_Island(Ground):
 
 
 class Runway(Ground):
-    def __init__(self, team):
+    def __init__(self, team, ground_group):
         pos_args = {"midleft": (50, screen.get_height() / 2)} if team.team_num == 0 else {
             "midright": (screen.get_width() - 50, screen.get_height() / 2)}
         super().__init__(team, "Assets/Ground/Runway.png", **pos_args)
@@ -408,8 +407,7 @@ class Runway(Ground):
 
 class PlayerController(ABC):
     def __init__(self, joystick_id, team):
-        self.joystick = Xbox_Controller(joystick_id,
-                                        int(pygame.joystick.get_count() / 2 + joystick_id)) if joystick_id is not None else None
+        self.joystick = Xbox_Controller(joystick_id, ) if joystick_id is not None else None
         self.team = team
         self.guis = []
 
@@ -419,10 +417,9 @@ class PlayerController(ABC):
 
 
 class Xbox_Controller:
-    def __init__(self, main_id: int, rumble_id: int):
+    def __init__(self, main_id: int):
         self.connection: bool = True
         self.joystick = pygame.joystick.Joystick(main_id)
-        self.rumble_device = pygame.joystick.Joystick(rumble_id)
         self.joystick.init()
         self.cache = {}
         self.buttons = {}
@@ -862,21 +859,26 @@ class Player(Plane):
         self.aim_cross.kill()
         self.indicator.kill()
 
-    def set_aim_cross(self):
+    def set_aim_cross(self) -> None:
         item = self.pylons.cur.data.item
-        if type(item) == Bomb:
-            v = pygame.math.Vector2((0.2 - 0.14) / 0.0005 * self.speed * 0.75, 0).rotate(self.angle)
+        if isinstance(item, Bomb):
+            if isinstance(item, JDAM):
+                lock = item.lock()
+                if lock is not None:
+                    lock: Attack_Point
+                    self.aim_cross.pos = lock.rect.center
+                    return None
+            v = pygame.math.Vector2((item.size - item.detonation_height) / item.drop_speed * self.speed * 0.75,
+                                    0).rotate(self.angle)
             pos = self.pylons.cur.data.pos_call()
-            x = pos[0] + v[0]
-            y = pos[1] - v[1]
-            self.aim_cross.pos = (x, y)
-        elif type(item) == Sidewinder:
+            self.aim_cross.pos = (pos[0] + v[0], pos[1] - v[1])
+        elif isinstance(item, Sidewinder):
             lock = self.pylons.cur.data.item.lock_target()
             if lock is not None:
-                self.aim_cross.pos = lock.pos
+                self.aim_cross.pos = lock.rect.center
             else:
                 self.aim_cross.pos = (-100, -100)
-        elif type(item) == Gun_Pod:
+        elif isinstance(item, Gun_Pod):
             lock = closest_target(self, self.team.enemy_team.plane.sprites(), max_range=650, angle_limit=90)
             if lock is not None:
                 self.aim_cross.pos = predicted_los(self, lock, 5)
@@ -1212,6 +1214,7 @@ class Bomb(Ordnance):
 class JDAM(Bomb):
     icon_path = "JDAM.png"
     price = 45
+    max_range = 350.0
 
     def __init__(self, carrier, node):
         super(JDAM, self).__init__(carrier=carrier, node=node)
@@ -1228,8 +1231,9 @@ class JDAM(Bomb):
                                       dis_to(self.rect.center, self.target_pos) / (self.carrier.speed * 0.75))
         super(JDAM, self).deploy()
 
-    def lock(self):
-        return closest_target(self, self.carrier.controller.team.attack_points, max_range=350, angle_limit=30)
+    def lock(self) -> Any | None:
+        return closest_target(self, self.carrier.controller.team.attack_points, max_range=self.max_range,
+                              angle_limit=30)
 
     def update(self):
         if self.target_pos is not None:
@@ -1408,7 +1412,7 @@ class Explosion(pygame.sprite.Sprite):
 
 class Smoke(pygame.sprite.Sprite):
     @classmethod
-    def add_smoke(cls, pos, m_vec=None, spread_x=(-1, 1), spread_y=(-1, 1), size=0.2, opacity=255, die_speed=5):
+    def add_smoke(cls, pos, m_vec=None, spread_x=(-1, 1), spread_y=(-1, 1), size=0.2, opacity=255, die_speed=5.0):
         non_traceables.add(Smoke(pos, m_vec=m_vec, spread_x=spread_x,
                                  spread_y=spread_y, size=size, opacity=opacity, die_speed=die_speed))
 
@@ -1667,6 +1671,10 @@ class Vehicle(pygame.sprite.Sprite, ABC):
                                                 topleft=self.rect.bottomright))
 
 
+class Ground_Fire:
+    attack_point: None | pygame.Vector2 = None
+
+
 class Building(Vehicle, ABC):
     _health = 150
 
@@ -1719,8 +1727,9 @@ class PowerPlant(Building):
     def update(self):
         self.spawn_gui_on_click()
         self.take_damage(50)
-        Smoke.add_smoke(self.rect.midtop, None, spread_x=(-0.35, 0.35), spread_y=(-1, -0.5),
-                        size=0.25, opacity=180, die_speed=1)
+        if self.life_span % 15 == 0:
+            Smoke.add_smoke(self.rect.midtop, None, spread_x=(-0.1, 0.1), spread_y=(-1, -0.5),
+                            size=0.35, opacity=250, die_speed=1.2)
 
 
 class Bunker(Vehicle):
@@ -1790,12 +1799,13 @@ class Search_Radar(Radar):
         self.update_image()
 
 
-class Grad(Vehicle):
+class Grad(Vehicle, Ground_Fire):
     __slots__ = ('image', 'rect')
     idle = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/grad.png').convert_alpha(), 0, 0.1)
     icon_path = "Grad.png"
     price = 50.0
     max_range = 600.0
+    reload_time = 120
 
     class Missile(pygame.sprite.Sprite):
         def __init__(self, controller, pos, target_pos: tuple | pygame.math.Vector2):
@@ -1842,20 +1852,16 @@ class Grad(Vehicle):
                                                0.1)
         self.rect = self.image.get_rect(center=pos)
         self.mask = pygame.mask.from_surface(self.image)
-        self.fire_timer = 0
-        self.reload_time = 120
 
     def update(self):
         self.spawn_gui_on_click()
         self.take_damage(35)
-        self.fire_timer += 1
         attack_points = tuple(filter(lambda at: dis_to(self.rect.center, at.rect.center) <= self.max_range,
                                      self.controller.team.attack_points))
-        if self.fire_timer >= self.reload_time and len(attack_points) > 0:
+        if self.life_span % self.reload_time == 0 and len(attack_points) > 0:
             non_traceables.add(
                 Grad.Missile(self.controller, self.rect.center, random.choice(attack_points).rect.center)
             )
-            self.fire_timer = 0
 
         self.update_image()
 
@@ -2197,7 +2203,7 @@ class Team:
     money = 5000
     collection_time = 900
 
-    def __init__(self, team_num: int, c: int, p: int):
+    def __init__(self, team_num: int, c: int, p: int, ground_group: pygame.sprite.Group):
         self.team_num = team_num
         self.pilot = Pilot_Controller(p, self)
         self.controller = Ground_Controller(c, self)
@@ -2216,8 +2222,8 @@ class Team:
         self.plane = pygame.sprite.GroupSingle()
         self.ordnances = pygame.sprite.Group()
 
-        self.island = Main_Island(self)
-        self.runway = Runway(self)
+        self.island = Main_Island(self, ground_group)
+        self.runway = Runway(self, ground_group)
 
     def buy(self, price) -> bool:
         if self.money - price >= 0:
@@ -2288,7 +2294,6 @@ class Team:
                     air_defence.fire_timer = 0
 
 
-ground_group = pygame.sprite.Group()
 gui_group = pygame.sprite.Group()
 non_traceables = pygame.sprite.Group()
 ui_layer = pygame.sprite.Group()
@@ -2296,37 +2301,45 @@ explosion_group = pygame.sprite.Group()
 
 
 def main(c0=None, p0=None, c1=None, p1=None):
-    team0 = Team(0, c=c0, p=p0)
-    team1 = Team(1, c=c1, p=p1)
+    ground_group = pygame.sprite.Group()
+
+    team0 = Team(0, c0, p0, ground_group)
+    team1 = Team(1, c1, p1, ground_group)
 
     team0.enemy_team, team1.enemy_team = team1, team0
 
-    team0.captured_land.add(*tuple(Small_Island(team0, (x, y)) for x, y in ((550, 850), (800, 260))))
-    team1.captured_land.add(*tuple(Small_Island(team1, (x, y)) for x, y in ((1370, 260), (1120, 850))))
+    team0.captured_land.add(*tuple(Small_Island(team0, (x, y), ground_group) for x, y in ((550, 850), (800, 260))))
+    team1.captured_land.add(*tuple(Small_Island(team1, (x, y), ground_group) for x, y in ((1370, 260), (1120, 850))))
 
-    all_joysticks = tuple(filter(lambda i: isinstance(i, Xbox_Controller), gc.get_objects()))
+    all_joysticks = tuple(filter(lambda joy: joy is not None,
+                                 (team0.controller.joystick, team0.pilot.joystick,
+                                  team1.controller.joystick, team1.pilot.joystick)))
 
     while True:
         # Events
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if event.type == pygame.JOYDEVICEREMOVED:
-                for gamepad in all_joysticks:
-                    if gamepad.joystick.get_instance_id() == event.instance_id:
-                        gamepad.connection = False
-                        break
-            elif event.type == pygame.JOYDEVICEADDED:
-                connected_device = pygame.joystick.Joystick(event.device_index)
-                if connected_device.get_name() == "Controller (Xbox 360 Wireless Receiver for Windows)":
+            match event.type:
+                case pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                case pygame.JOYDEVICEREMOVED:
                     for gamepad in all_joysticks:
-                        if not gamepad.connection:
-                            gamepad.connection = True
-                            gamepad.joystick = connected_device
-                            gamepad.rumble_device = None
-                            gamepad.joystick.init()
+                        if gamepad.joystick.get_instance_id() == event.instance_id:
+                            gamepad.connection = False
                             break
+                case pygame.JOYDEVICEADDED:
+                    connected_device = pygame.joystick.Joystick(event.device_index)
+                    if connected_device.get_name() == "Controller (Xbox 360 Wireless Receiver for Windows)":
+                        for gamepad in all_joysticks:
+                            if not gamepad.connection:
+                                gamepad.connection = True
+                                gamepad.joystick = connected_device
+                                gamepad.rumble_device = None
+                                gamepad.joystick.init()
+                                break
+
+        # Clear Layers
+        line_layer = pygame.Surface((1920, 1080), pygame.SRCALPHA, 32)
 
         # Updates
         team0.update()
@@ -2362,7 +2375,7 @@ def main(c0=None, p0=None, c1=None, p1=None):
         clock.tick(60)
 
 
-def settings() -> None:
+def settings() -> dict[int, Pointer]:
     class Vehicle_Settings:
         class Attribute_changer:
             def __init__(self, pos, obj, attribute: str, step: int | float):
@@ -2431,7 +2444,7 @@ def settings() -> None:
             self.next_button = UI.Button("next", button_callable, button_group, args=(1,), midleft=button_c)
             self.previous_button = UI.Button("previous", button_callable, button_group, args=(-1,),
                                              midright=button_c)
-            self.exit_button = UI.Button("next", exit_button_callable, button_group,
+            self.exit_button = UI.Button("done", exit_button_callable, button_group,
                                          midleft=self.next_button.rect.midright)
             self.changer = self.get_changer()
             self.icon = self.get_icon()
@@ -2451,54 +2464,29 @@ def settings() -> None:
                     change.down_button.kill()
                     change.counter.kill()
                     change.label.kill()
-
             item = self.vehicles.cur.data
-            if issubclass(item, Vehicle):
-                c = 1300
-                c1 = 1750
-                data = [
-                    ("price", 5.0, (c, 120)),
-                    ("delay", 30.0, (c, 280)),
-                    ("_health", 5.0, (c, 440)),
-                    ("repair_cooldown", 30.0, (c, 600)),
-                    ("repair_multiplier", 0.05, (c, 760))
-                ]
-                if hasattr(item, "max_range"):
-                    data.append(("max_range", 25.0, (c1, screen.get_height() / 2)))
-                if hasattr(item, "reload_time"):
-                    data.append(("reload_time", 10.0, (c1, screen.get_height() / 3)))
-                if hasattr(item, "income"):
-                    data.append(("income", 2.5, (c1, screen.get_height() / 2)))
-            elif issubclass(item, Ordnance):
-                c = 1300
-                data = []
-                atts = (("drop_speed", 0.00001),
-                        ("trash_chance", 0.05),
-                        ("burner", 5.0),
-                        ("speed_multiplier", 0.01),
-                        ("drag", 0.001)
-                        )
-                # [hasattr(item, att) for att, step in atts]
-                valid_atts = tuple(filter(lambda a: hasattr(item, a[0]), atts))
-                for index, content in enumerate(valid_atts):
-                    att, step = content
-                    if hasattr(item, att):
-                        data.append((att, step, (c, 200 * index + 200)))
-            elif item is Team:
-                c = 1450
-                start = 350
-                margin = 160
-                data = [("plane_delay", 30.0, (c, start + margin * 0)),
-                        ("plane_price", 10.0, (c, start + margin * 1)),
-                        ("money", 50.0, (c, start + margin * 2)),
-                        ("collection_time", 30.0, (c, start + margin * 3))
-                        ]
-            elif item is Player:
-                c = 1450
-                data = [("price", 10.0, (c, 540))]
-            else:
-                print(item)
-                exit(-1)
+            all_atts = (
+                ("drop_speed", 0.00001),
+                ("trash_chance", 0.05),
+                ("burner", 5.0),
+                ("speed_multiplier", 0.01),
+                ("drag", 0.001),
+                ("price", 5.0),
+                ("delay", 30.0),
+                ("_health", 5.0),
+                ("repair_cooldown", 30.0),
+                ("repair_multiplier", 0.05),
+                ("max_range", 25.0),
+                ("reload_time", 10.0),
+                ("income", 2.5),
+                ("plane_delay", 30.0),
+                ("money", 50.0),
+                ("collection_time", 30.0),
+            )
+            valid_atts = tuple(filter(lambda a: hasattr(item, a[0]), all_atts))
+            for j, content in enumerate(valid_atts):
+                att, step = content
+                data.append((att, step, (450 * (j % 2) + 1200, 160 * math.floor(j / 2) + 160)))
             return [self.Attribute_changer(pos, item, att, step) for att, step, pos in data]
 
     def add_new_device(device_index: int):
@@ -2551,7 +2539,7 @@ def settings() -> None:
         pygame.display.flip()
         clock.tick(60)
 
-    return None
+    return gamepads
 
 
 def start_menu() -> dict:
@@ -2563,8 +2551,22 @@ def start_menu() -> dict:
             self.rect = self.image.get_rect(**kwargs)
             self.mask = pygame.mask.from_surface(self.image)
 
-    def settings_button():
-        settings()
+    gamepads = {}
+
+    def settings_button(joy_dict):
+        new_joy = settings()
+        kill_inactive_devices(joy_dict)
+        for point in new_joy.values():
+            add_new_device(point.joystick.joystick.get_id())
+
+    def kill_inactive_devices(joy_dict: dict):
+        ids = (pygame.joystick.Joystick(j).get_instance_id() for j in range(pygame.joystick.get_count()))
+        removes = []
+        for key in joy_dict:
+            if key not in ids:
+                removes.append(key)
+        for key in removes:
+            joy_dict.pop(key)
 
     def add_new_device(device_index: int):
         joy = pygame.joystick.Joystick(device_index)
@@ -2578,9 +2580,8 @@ def start_menu() -> dict:
                                     Pad(pad_id="c1", center=(720, 540)),
                                     Pad(pad_id="p1", center=(720, 340)),
                                     )
-    button_group = pygame.sprite.GroupSingle(UI.Button("Next", settings_button, midbottom=(960, 1080)))
-
-    gamepads = {}
+    button_group = pygame.sprite.GroupSingle(
+        UI.Button("settings", settings_button, args=(gamepads,), center=(960, 950)))
 
     for i in range(pygame.joystick.get_count()):
         add_new_device(i)
@@ -2600,7 +2601,6 @@ def start_menu() -> dict:
                     add_new_device(event.device_index)
 
         if all(overlapping(pad, *pointer_group) for pad in pad_group):
-            print("YES")
             r_dict = {}
             for pad in pad_group:
                 pad: Pad
