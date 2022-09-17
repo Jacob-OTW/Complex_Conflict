@@ -86,7 +86,7 @@ def gimbal_limit(self, angle: int | float, limit: int | float) -> bool:
     return abs(((self.angle - angle) + 180) % 360 - 180) > limit
 
 
-def closest_target(self, sprites: list, max_range: int | float = 250, angle_limit=0, exclude=None):
+def closest_target(self, sprites: list, max_range: int | float = 250, angle_limit: int | float = 0, exclude=None):
     compare = {max_range: None}
     for sprite in sprites:
         if sprite is not exclude:
@@ -128,6 +128,19 @@ def overlapping(caller: pygame.sprite.Sprite, *sprites: pygame.sprite.Sprite) ->
     return False
 
 
+def point_colliding(point: tuple[int, int], *sprites) -> tuple[Any]:
+    return tuple(filter(lambda sprite: sprite.rect.collidepoint(point), sprites))
+
+
+def max_reach(start_point: tuple[int, int] | pygame.Vector2,
+              end_point: tuple[int, int] | pygame.Vector2,
+              m_range: int | float) -> tuple[float, float]:
+    to_dir = dir_to(start_point, end_point)
+    to_len = min(m_range, dis_to(start_point, end_point))
+    return (math.cos(math.radians(to_dir)) * to_len) + start_point[0], \
+           (-math.sin(math.radians(to_dir)) * to_len) + start_point[1]
+
+
 def predicted_los(self, target, speed, r=0):
     if target:
         t = dis_to(self.rect.center,
@@ -136,6 +149,15 @@ def predicted_los(self, target, speed, r=0):
                 -target.v[1] * int(t))
     else:
         return 0
+
+
+def fill(surface, color):
+    w, h = surface.get_size()
+    r, g, b, _ = color
+    for x in range(w):
+        for y in range(h):
+            a = surface.get_at((x, y))[3]
+            surface.set_at((x, y), pygame.Color(r, g, b, a))
 
 
 class GUI(pygame.sprite.Sprite):
@@ -412,7 +434,7 @@ class PlayerController(ABC):
         self.guis = []
 
     @abstractmethod
-    def handle_keys(self):
+    def handle_keys(self, **kwargs):
         pass
 
 
@@ -505,6 +527,7 @@ class Ground_Controller(PlayerController):
     def __init__(self, joystick_id, team):
         super().__init__(joystick_id, team)
         self.pointer = self.Pointer(self)
+        self.selected_vehicles = pygame.sprite.Group()
         self.click = False
         self.lifespan = 0
         self.in_hand = None
@@ -515,6 +538,10 @@ class Ground_Controller(PlayerController):
 
         def close_gui(button: GUI.GUI_Button):
             button.gui.destroy(done=True)
+            if isinstance(button.gui.parent, GUI.GUI_Button):
+                button.gui.parent.gui.destroy(done=True)
+            if button.gui in self.guis:
+                self.guis.remove(button.gui)
 
         def stick_to_parent(gui: GUI):
             gui.set_rect(midtop=gui.parent.gui.rect.midbottom)
@@ -536,15 +563,17 @@ class Ground_Controller(PlayerController):
 
         def add_vehicles(button: GUI.GUI_Button):
             if button.sub_gui is None:
-                button.sub_gui = GUI("vehicles", (4, 2), box_size=(50, 50), content=[
-                    ("man_aa.png", button_callable, [ManAA]),
-                    ("vads.png", button_callable, [Vads]),
-                    ("s300.png", button_callable, [Long_Range_SAM]),
-                    ("sa15.png", button_callable, [Medium_Range_SAM]),
-                    ("cwis.png", button_callable, [CWIS]),
-                    ("grad.png", button_callable, [Grad]),
-                    ("rad.png", button_callable, [Search_Radar]),
-                    ("none.png", button_callable, [None])
+                button.sub_gui = GUI("vehicles", (5, 2), box_size=(50, 50), content=[
+                    ("man_aa.png", button_callable, (ManAA,)),
+                    ("vads.png", button_callable, (Vads,)),
+                    ("s300.png", button_callable, (Long_Range_SAM,)),
+                    ("sa15.png", button_callable, (Medium_Range_SAM,)),
+                    ("cwis.png", button_callable, (CWIS,)),
+                    ("grad.png", button_callable, (Grad,)),
+                    ("cruise.png", button_callable, (Cruise_Missile_Launcher,)),
+                    ("jtac.png", button_callable, (JTAC,)),
+                    ("rad.png", button_callable, (Search_Radar,)),
+                    ("none.png", button_callable, (None,))
                 ], output_len=1, parent=button, callback=stick_to_parent, midtop=button.gui.rect.midbottom)
                 self.guis.append(button.sub_gui)
 
@@ -557,41 +586,119 @@ class Ground_Controller(PlayerController):
                 ], output_len=1, parent=button, callback=stick_to_parent, midtop=button.gui.rect.midbottom)
                 self.guis.append(button.sub_gui)
 
-        def add_attack_point(button: GUI.GUI_Button):
-            button.gui.parent.team.attack_points.add(Attack_Point(self.pointer.pos, button.gui.parent))
-            button.gui.destroy(done=True)
+        def add_attack_options(button: GUI.GUI_Button):
+            if button.sub_gui is None:
+                button.sub_gui = GUI("attacks", (3, 2), box_size=(50, 50), content=[
+                    ("yes.png", unselect, ()),
+                    ("no.png", remove_attack_points, ()),
+                    ("back.png", remove_last_point, ()),
+                    ("forward.png", add_point, ()),
+                    ("select.png", select_vehicle, ()),
+                    ("none.png", close_gui, ())
+                ], output_len=1, parent=button, callback=stick_to_parent, midtop=button.gui.rect.midbottom)
+                self.guis.append(button.sub_gui)
+
+        def remove_attack_points(button: GUI.GUI_Button):
+            for vehicle in self.selected_vehicles:
+                if isinstance(vehicle, Ground_Fire):
+                    vehicle: Ground_Fire | Vehicle
+                    vehicle.attack_point = None
+                elif isinstance(vehicle, Path_Guided_Fire):
+                    vehicle.positions.clear()
+                    vehicle.launch_permission = False
+            self.selected_vehicles.empty()
+            close_gui(button)
+
+        def unselect(button: GUI.GUI_Button):
+            for vehicle in self.selected_vehicles:
+                if isinstance(vehicle, Ground_Fire):
+                    vehicle: Ground_Fire | Vehicle
+                    vehicle.attack_point = max_reach(vehicle.rect.center, self.pointer.rect.center, vehicle.max_range)
+                if isinstance(vehicle, Path_Guided_Fire) and vehicle.positions:
+                    vehicle.launch_permission = True
+
+        def select_vehicle(button: GUI.GUI_Button):
+            for col_vehicle in point_colliding(self.pointer.rect.center, *self.team.vehicles):
+                if isinstance(col_vehicle, Ground_Fire):
+                    if any(isinstance(x, Path_Guided_Fire) for x in self.selected_vehicles):
+                        self.selected_vehicles.empty()
+                    col_vehicle: pygame.sprite.Sprite | Ground_Fire
+                    if col_vehicle in self.selected_vehicles:
+                        self.selected_vehicles.remove(col_vehicle)
+                    else:
+                        self.selected_vehicles.add(col_vehicle)
+                elif isinstance(col_vehicle, Path_Guided_Fire):
+                    col_vehicle: pygame.sprite.Sprite | Path_Guided_Fire
+                    if col_vehicle in self.selected_vehicles:
+                        self.selected_vehicles.remove(col_vehicle)
+                    else:
+                        self.selected_vehicles.add(col_vehicle)
+
+        def remove_last_point(button: GUI.GUI_Button):
+            for i, vehicle in enumerate(self.selected_vehicles):
+                if isinstance(vehicle, Path_Guided_Fire) and vehicle.positions:
+                    vehicle: Path_Guided_Fire | Vehicle
+                    vehicle.positions.pop()
+
+        def add_point(button: GUI.GUI_Button):
+            for i, vehicle in enumerate(self.selected_vehicles):
+                if isinstance(vehicle, Path_Guided_Fire):
+                    vehicle: Path_Guided_Fire | Vehicle
+                    vehicle.positions.append(self.pointer.rect.center)
 
         if GUI.find_gui(self.guis, "general") is None:
             self.guis.append(
                 GUI("general", (4, 1), parent=self, box_size=(50, 50), callback=stick_to_pointer, content=[
                     ("car.png", add_vehicles, ()),
                     ("house.png", add_buildings, ()),
-                    ("attack_point.png", add_attack_point, ()),
+                    ("attack_point.png", add_attack_options, ()),
                     ("none.png", close_gui, ())
                 ], topleft=self.pointer.rect.center))
 
-    def handle_keys(self):
+    def handle_keys(self, **kwargs):
         self.joystick.clear_cache()
         self.pointer.move(pygame.math.Vector2(self.joystick.stick(0, 1)) * 5, relative=True)
-        if self.joystick.button_check(1):
-            if self.in_hand is not None:
-                island = first_overlap(self.in_hand, self.team.island, *self.team.captured_land)
-                island: pygame.sprite.Sprite | Ground
-                if island is not None and not overlapping(self.in_hand, *self.team.vehicles,
-                                                          *island.blueprints):
-                    self.in_hand.place(island)
+
+        # Draw Effects
+        surface = kwargs.get("line_layer")
+        for vehicle in self.selected_vehicles:
+            vehicle: Ground_Fire | Vehicle
+            pygame.draw.rect(surface, (255, 166, 0, 255), vehicle.rect.inflate(7.5, 7.5), 5)
+            if isinstance(vehicle, Ground_Fire):
+                vehicle: Ground_Fire | Vehicle
+                pygame.draw.line(surface, (255, 255, 0), vehicle.rect.center,
+                                 max_reach(vehicle.rect.center, self.pointer.rect.center, vehicle.max_range), 5)
+            elif isinstance(vehicle, Path_Guided_Fire) and vehicle.positions:
+                vehicle: Path_Guided_Fire | Vehicle
+                pygame.draw.lines(surface, (0, 0, 255), False,
+                                  (vehicle.rect.center, *vehicle.positions), 3)
+
+        if self.joystick.joystick.get_button(5):
+            for a_d in self.team.enemy_team.vehicles:
+                if hasattr(a_d, "max_range"):
+                    pygame.draw.circle(surface, (255, 255, 0, 155), a_d.rect.center, a_d.max_range, 10)
+
         if self.in_hand is not None:
             self.in_hand.rect.center = self.pointer.rect.center
 
         if self.joystick.button_check(7):
             self.create_gui()
 
-        if self.joystick.button_check(0) and self.guis:
-            self.guis[-1].buttons.cur.data.callback_f()
-        if self.joystick.check_dpad(-1, 0) and self.guis:
-            self.guis[-1].buttons.previous()
-        if self.joystick.check_dpad(1, 0) and self.guis:
-            self.guis[-1].buttons.next()
+        if self.guis:
+            if self.joystick.button_check(0):
+                self.guis[-1].buttons.cur.data.callback_f()
+            if self.joystick.check_dpad(-1, 0):
+                self.guis[-1].buttons.previous()
+            if self.joystick.check_dpad(1, 0):
+                self.guis[-1].buttons.next()
+        else:
+            if self.joystick.button_check(0):
+                if self.in_hand is not None:
+                    island = first_overlap(self.in_hand, self.team.island, *self.team.captured_land)
+                    island: pygame.sprite.Sprite | Ground
+                    if island is not None and not overlapping(self.in_hand, *self.team.vehicles,
+                                                              *island.blueprints):
+                        self.in_hand.place(island)
 
 
 class Pilot_Controller(PlayerController):
@@ -601,7 +708,7 @@ class Pilot_Controller(PlayerController):
         self.plane_bp = pygame.sprite.GroupSingle()
         self.gun_timer = 25
 
-    def handle_keys(self):
+    def handle_keys(self, **kwargs):
         self.joystick.clear_cache()
         if self.plane is not None:
             self.gun_timer += 1
@@ -865,8 +972,7 @@ class Player(Plane):
             if isinstance(item, JDAM):
                 lock = item.lock()
                 if lock is not None:
-                    lock: Attack_Point
-                    self.aim_cross.pos = lock.rect.center
+                    self.aim_cross.pos = lock
                     return None
             v = pygame.math.Vector2((item.size - item.detonation_height) / item.drop_speed * self.speed * 0.75,
                                     0).rotate(self.angle)
@@ -931,7 +1037,7 @@ class Player(Plane):
             gui.destroy(done=True)
         self.controller.guis = []
 
-    def update(self):
+    def update(self, **kwargs):
         self.life_time += 1
         if self.health <= 0:
             self.kill()
@@ -988,7 +1094,7 @@ class Ordnance(pygame.sprite.Sprite):
 
 
 class Missile(pygame.sprite.Sprite):
-    def __init__(self, controller, pos, target):
+    def __init__(self, controller, pos, target, not_base=True):
         pygame.sprite.Sprite.__init__(self)
         self.controller = controller
         self.pos = pygame.math.Vector2(pos)
@@ -1000,19 +1106,21 @@ class Missile(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(center=self.pos)
         self.mask = pygame.mask.from_surface(self.image)
 
-        self.target = target
-        self.angle = dir_to(self.rect.center, self.target.rect.center)
+        if target:
+            self.target = target
+            self.angle = dir_to(self.rect.center, self.target.rect.center)
 
-        if isinstance(self.target, Plane):
-            self.target.threats.add(self)
+            if isinstance(self.target, Plane):
+                self.target.threats.add(self)
 
-        self.speed = 3
+        if not_base:
+            self.speed = 3
 
-        self.turn_energy = 50
+            self.turn_energy = 50
 
-        self.burner = 90  # Amount of ticks before the missile slows down.
+            self.burner = 90  # Amount of ticks before the missile slows down.
 
-        self.trash_chance = 0.4
+            self.trash_chance = 0.4
 
     def predicted_los(self, target, r=0):
         if target:
@@ -1051,15 +1159,15 @@ class Missile(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(center=self.pos)
         self.mask = pygame.mask.from_surface(self.image)
 
-    def slow_down(self, drag=0.999):
+    def slow_down(self, drag=0.999, smoke: bool = True, offset: int = -10):
         self.burner -= 1
         if self.burner <= 0:
             self.speed *= drag
             if self.speed <= 0.5:
                 self.remove_threat()
                 self.kill()
-        else:
-            v = pygame.math.Vector2(-10, 0).rotate(self.angle)
+        elif smoke:
+            v = pygame.math.Vector2((offset, 0)).rotate(self.angle)
             p = self.rect.center
             smoke_vent = (p[0] + v[0], p[1] - v[1])
             Smoke.add_smoke(smoke_vent, spread_x=(-0.2, 0.2), spread_y=(-0.2, 0.2), size=0.1, opacity=122)
@@ -1215,6 +1323,7 @@ class JDAM(Bomb):
     icon_path = "JDAM.png"
     price = 45
     max_range = 350.0
+    angle_limit = 30.0
 
     def __init__(self, carrier, node):
         super(JDAM, self).__init__(carrier=carrier, node=node)
@@ -1225,15 +1334,22 @@ class JDAM(Bomb):
         self.carrier.controller.team.ordnances.add(self)
         target = self.lock()
         if target is not None:
-            self.target_pos = target.rect.center
+            self.target_pos = target
             self.drop_speed = (
                                       self.size - self.detonation_height) / (
                                       dis_to(self.rect.center, self.target_pos) / (self.carrier.speed * 0.75))
         super(JDAM, self).deploy()
 
-    def lock(self) -> Any | None:
-        return closest_target(self, self.carrier.controller.team.attack_points, max_range=self.max_range,
-                              angle_limit=30)
+    def lock(self) -> tuple[float, float] | None:
+        jtacs = tuple(filter(lambda v: isinstance(v, JTAC), self.carrier.controller.team.vehicles))
+        d = {}
+        for jtac in jtacs:
+            if jtac.attack_point is not None and not gimbal_limit(self, dir_to(self.rect.center, jtac.attack_point),
+                                                                  self.angle_limit) \
+                    and dis_to(self.rect.center, jtac.attack_point) < self.max_range:
+                d[dis_to(self.rect.center, jtac.attack_point)] = jtac.attack_point
+        if len(d) > 0:
+            return d.get(min(d.keys()))
 
     def update(self):
         if self.target_pos is not None:
@@ -1241,13 +1357,15 @@ class JDAM(Bomb):
         super(JDAM, self).update()
 
 
-class Sidewinder(Ordnance):
+class Sidewinder(Ordnance, Missile):
     icon_path = "Sidewinder.png"
     price = 25
     trash_chance = 0.75
     burner = 45
     speed_multiplier = 2.5
     drag = 0.993
+    max_range = 650
+    angle_limit = 30.0
 
     def __init__(self, carrier, node, target_group):
         super().__init__(carrier, node)
@@ -1287,7 +1405,7 @@ class Sidewinder(Ordnance):
                 pass
 
     def lock_target(self):
-        return closest_target(self, self.target_group.sprites(), max_range=650, angle_limit=30)
+        return closest_target(self, self.target_group.sprites(), max_range=self.max_range, angle_limit=self.angle_limit)
 
     def remove_threat(self):
         if self.target:
@@ -1313,14 +1431,7 @@ class Sidewinder(Ordnance):
                     self.target = None
 
             # Slow down the missile
-            self.burner -= 1
-            if self.burner <= 0:
-                self.speed *= self.drag
-                if self.speed <= 0.5:
-                    self.remove_threat()
-                    self.kill()
-            else:
-                Smoke.add_smoke(self.rect.center, spread_x=(-0.2, 0.2), spread_y=(-0.2, 0.2), size=0.1)
+            self.slow_down(self.drag, offset=-8)
 
             # Move the missile
             self.v = pygame.math.Vector2((self.speed, 0)).rotate(self.angle)
@@ -1483,15 +1594,6 @@ class Flare(pygame.sprite.Sprite):
 
 
 class Blueprint(pygame.sprite.Sprite):
-    @staticmethod
-    def fill(surface, color):
-        w, h = surface.get_size()
-        r, g, b, _ = color
-        for x in range(w):
-            for y in range(h):
-                a = surface.get_at((x, y))[3]
-                surface.set_at((x, y), pygame.Color(r, g, b, a))
-
     def __init__(self, controller, obj, args=None, delay: int = 0, free: bool = False, overwrite_image=None):
         super(Blueprint, self).__init__()
         self.assigned_object = obj
@@ -1504,7 +1606,7 @@ class Blueprint(pygame.sprite.Sprite):
         else:
             self.image = overwrite_image
         self.image.set_alpha(75)
-        self.fill(self.image, pygame.Color(10, 40, 250))
+        fill(self.image, pygame.Color(10, 40, 250))
         self.rect = self.image.get_rect(center=pygame.mouse.get_pos())
         self.mask = pygame.mask.from_surface(self.image)
 
@@ -1657,15 +1759,21 @@ class Vehicle(pygame.sprite.Sprite, ABC):
                             self.health = self.max_health
 
         self.life_span += 1
-        if self.controller.joystick is not None and self.controller.joystick.connection and self.controller.joystick.cache.get(
-                1) and self.rect.collidepoint(self.controller.pointer.pos) and \
-                self.gui is None and self.life_span > 30:
+        cons = all((self.controller.joystick is not None,
+                    self.controller.joystick.connection,
+                    self.controller.in_hand is None,
+                    not self.controller.guis,
+                    self.gui is None,
+                    self.controller.joystick.cache.get(0),
+                    self.rect.collidepoint(self.controller.pointer.pos),
+                    self.gui is None and self.life_span > 30))
+        if cons:
             if GUI.find_gui(self.controller.guis, "vehicle_menu") is None:
                 self.controller.guis.append(GUI("vehicle_menu", (1, 4),
                                                 content=[
                                                     ("none.png", gui_callable, [None]),
                                                     ("bin.png", gui_callable, ["kill"]),
-                                                    ("none.png", gui_callable, ["repair"]),
+                                                    ("repair.png", gui_callable, ["repair"]),
                                                     ("move.png", gui_callable, ["move"])
                                                 ], parent=self.controller,
                                                 topleft=self.rect.bottomright))
@@ -1673,10 +1781,43 @@ class Vehicle(pygame.sprite.Sprite, ABC):
 
 class Ground_Fire:
     attack_point: None | pygame.Vector2 = None
+    max_range = 500
+
+
+class Path_Guided_Fire:
+    class Path:
+        thresh_hold = 50
+
+        def __init__(self, *points):
+            if len(points) >= 1:
+                self.all = LinkedCircle(*points)
+                self.start = self.all.head
+                cur = self.all.head
+                while True:
+                    if cur.next_node == self.start:
+                        break
+                    cur = cur.next_node
+                self.end = cur
+            else:
+                raise ValueError("Path Must Contain at least 1 item on start")
+
+        def check(self, parent, angle_limit) -> bool:
+            parent: Path_Guided_Missile
+            if dis_to(parent.pos, self.all.cur.data) < 100 and gimbal_limit(parent,
+                                                                            dir_to(parent.pos, self.all.cur.data),
+                                                                            angle_limit):
+                if self.all.cur.next_node is self.all.head:
+                    return True
+                self.all.cur = self.all.cur.next_node
+                return False
+
+    positions = []
+    launch_permission: bool = False
 
 
 class Building(Vehicle, ABC):
     _health = 150
+    income = 0
 
     @abstractmethod
     def __init__(self, controller):
@@ -1732,7 +1873,7 @@ class PowerPlant(Building):
                             size=0.35, opacity=250, die_speed=1.2)
 
 
-class Bunker(Vehicle):
+class Bunker(Building):
     idle = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/bunker.png').convert_alpha(), 0, 0.2)
     icon_path = "Bunker.png"
     price = 0
@@ -1750,14 +1891,41 @@ class Bunker(Vehicle):
         pass
 
     def update(self):
-        if self.life_span > 180:
-            self.take_damage(35)
+        self.take_damage(35)
         self.spawn_gui_on_click()
 
         self.update_image()
 
     def spawn_gui_on_click(self):
+        def gui_callable(button, *args):
+            args0 = args[0]
+            button.gui.destroy(done=True)
+            match args0:
+                case None:
+                    button.gui.parent.gui = None
+                case "repair":
+                    if self.repair_cooldown_timer <= 0:
+                        price = int((self.health / self.max_health) * (self.price * self.repair_multiplier))
+                        if self.controller.team.buy(price):
+                            self.health = self.max_health
+
         self.life_span += 1
+        cons = all((self.controller.joystick is not None,
+                    self.controller.joystick.connection,
+                    self.controller.in_hand is None,
+                    not self.controller.guis,
+                    self.gui is None,
+                    self.controller.joystick.cache.get(0),
+                    self.rect.collidepoint(self.controller.pointer.pos),
+                    self.gui is None and self.life_span > 30))
+        if cons:
+            if GUI.find_gui(self.controller.guis, "vehicle_menu") is None:
+                self.controller.guis.append(GUI("vehicle_menu", (1, 2),
+                                                content=[
+                                                    ("none.png", gui_callable, [None]),
+                                                    ("repair.png", gui_callable, ["repair"]),
+                                                ], parent=self.controller,
+                                                topleft=self.rect.bottomright))
 
 
 class Radar(Vehicle, ABC):
@@ -1806,6 +1974,7 @@ class Grad(Vehicle, Ground_Fire):
     price = 50.0
     max_range = 600.0
     reload_time = 120
+    ammo_cost = 30.0
 
     class Missile(pygame.sprite.Sprite):
         def __init__(self, controller, pos, target_pos: tuple | pygame.math.Vector2):
@@ -1848,22 +2017,70 @@ class Grad(Vehicle, Ground_Fire):
     def __init__(self, pos, controller):
         super().__init__(controller)
         self.pos = pos
-        self.image = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/grad.png').convert_alpha(), 0,
-                                               0.1)
+        self.image = self.idle.copy()
         self.rect = self.image.get_rect(center=pos)
         self.mask = pygame.mask.from_surface(self.image)
 
     def update(self):
         self.spawn_gui_on_click()
         self.take_damage(35)
-        attack_points = tuple(filter(lambda at: dis_to(self.rect.center, at.rect.center) <= self.max_range,
-                                     self.controller.team.attack_points))
-        if self.life_span % self.reload_time == 0 and len(attack_points) > 0:
+        if self.life_span % self.reload_time == 0 and self.attack_point is not None and self.controller.team.buy(
+                self.ammo_cost):
             non_traceables.add(
-                Grad.Missile(self.controller, self.rect.center, random.choice(attack_points).rect.center)
+                Grad.Missile(self.controller, self.rect.center, self.attack_point)
             )
 
         self.update_image()
+
+
+class Cruise_Missile_Launcher(Vehicle, Path_Guided_Fire):
+    idle = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/Patriot.png').convert_alpha(), 0, 0.2)
+    icon_path = "Cruise.png"
+    price = 500
+    reload_time = 600
+    ammo_cost = 250
+
+    def __init__(self, pos, controller):
+        super().__init__(controller)
+        self.pos = pos
+        self.mask = None
+        self.update_image()
+        self.positions = self.positions.copy()
+
+    def update(self):
+        self.controller: Ground_Controller
+        self.spawn_gui_on_click()
+        self.take_damage(35)
+        if self.life_span % self.reload_time == 0 and self.launch_permission and self.controller.team.buy(
+                self.ammo_cost):
+            non_traceables.add(Path_Guided_Missile(self.rect.center,
+                                                   self.controller,
+                                                   Path_Guided_Fire.Path(*self.positions)))
+            self.launch_permission = False
+
+
+class JTAC(Vehicle, Ground_Fire):
+    idle = pygame.transform.rotozoom(pygame.image.load('Assets/Vehicles/jtac.png').convert_alpha(), 0, 0.1)
+    max_range = 900
+    price = 50
+
+    def __init__(self, pos, controller):
+        super().__init__(controller)
+        self.pos = pos
+        self.image = self.idle.copy()
+        self.rect = self.image.get_rect(center=pos)
+        self.mask = pygame.mask.from_surface(self.image)
+
+    def update(self):
+        self.spawn_gui_on_click()
+        self.take_damage(35)
+
+        self.update_image()
+
+
+class Command_Centre(Cruise_Missile_Launcher):
+    def update(self):
+        pass
 
 
 class SAM(Missile):
@@ -1925,6 +2142,53 @@ class SAM(Missile):
         self.update_image()
 
 
+class Path_Guided_Missile(Missile):
+    idle = pygame.image.load("Assets/Vehicles/man_aa_missile.png").convert_alpha()
+    speed = 1.5
+    turn_speed = 2
+    burner = 1500
+    drag = 0.99
+    _health = 100
+
+    def __init__(self, pos, controller: Ground_Controller, path: Path_Guided_Fire.Path):
+        super(Path_Guided_Missile, self).__init__(controller, pos, None, False)
+        self.speed = Path_Guided_Missile.speed
+        self.burner = Path_Guided_Missile.burner
+        self.health = self._health
+        self.path = path
+        self.angle = dir_to(self.pos, self.path.all.cur.data)
+        self.mask = None
+        self.update_image()
+        self.threats = pygame.sprite.Group()
+        self.v = pygame.Vector2((self.speed, 0))
+
+        self.controller.team.ordnances.add(self)
+        self.controller.team.plane.add(self)
+
+    def update_image(self):
+        self.image = pygame.transform.rotozoom(self.idle.copy(), self.angle, 0.1)
+        self.rect = self.image.get_rect(center=self.pos)
+        self.mask = pygame.mask.from_surface(self.image)
+
+    def explode(self):
+        Explosion.add_explosion(self.rect.center)
+        self.kill()
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        if kwargs.get("plane", False):
+            return None
+        if self.path.check(self, 90):
+            self.explode()
+        move(self, self.speed)
+        face_to(self, self.path.all.cur.data, self.turn_speed)
+        self.slow_down(self.drag, self.burner % 3 == 0)
+
+        if self.health <= 0:
+            self.kill()
+
+        self.update_image()
+
+
 class Bullet(pygame.sprite.Sprite):
     __slots__ = ('stored', 'position', 'image', 'rect', 'mask', 'v')
 
@@ -1971,6 +2235,7 @@ class Long_Range_SAM(Vehicle):
     price = 200
     max_range = 700
     reload_time = 180
+    ammo_cost = Player.price
 
     class Long_Range_Missile(SAM):
         def __init__(self, controller: Ground_Controller, pos, target, launcher):
@@ -2015,6 +2280,7 @@ class Medium_Range_SAM(Vehicle):
     price = 125
     max_range = 450
     reload_time = 240
+    ammo_cost = round(Player.price / 2)
 
     class Medium_Range_Missile(SAM):
         def __init__(self, controller: Ground_Controller, pos, target, launcher):
@@ -2052,6 +2318,7 @@ class CWIS(Vehicle):
     price = 90
     max_range = 200
     reload_time = 120
+    ammo_cost = 5
 
     def __init__(self, pos, controller):
         super(CWIS, self).__init__(controller=controller)
@@ -2104,6 +2371,7 @@ class Vads(Vehicle):
     icon_path = "Vads.png"
     price = 35
     max_range = 250
+    ammo_cost = 1
 
     def __init__(self, pos, controller):
         super().__init__(controller)
@@ -2127,7 +2395,7 @@ class Vads(Vehicle):
         def damage_target(bullet):
             bullet.target.health -= 1
 
-        if self.target:
+        if self.target and self.controller.team.buy(self.ammo_cost):
             non_traceables.add(
                 Bullet(self.controller, self.rect.center,
                        dir_to(self.rect.center, self.predicted_los(self.target)), target=self.target,
@@ -2151,6 +2419,7 @@ class ManAA(Vehicle):
     price = 75
     max_range = 350
     reload_time = 300
+    ammo_cost = 20.0
 
     def __init__(self, pos, controller):
         super().__init__(controller)
@@ -2175,25 +2444,11 @@ class ManAA(Vehicle):
         self.spawn_gui_on_click()
         self.target = closest_target(self, self.controller.team.enemy_team.plane.sprites(), max_range=self.max_range)
         self.fire_timer += 1
-        if self.target and self.fire_timer % self.reload_time == 0:
+        if self.target and self.fire_timer % self.reload_time == 0 and self.controller.team.buy(self.ammo_cost):
             self.shoot()
         self.take_damage(40)
 
         self.update_image()
-
-
-class Attack_Point(pygame.sprite.Sprite):
-    def __init__(self, pos, controller):
-        super(Attack_Point, self).__init__()
-        self.controller = controller
-        self.image = pygame.transform.rotozoom(pygame.image.load("Assets/attack_point.png").convert_alpha(), 0, 0.45)
-        self.rect = self.image.get_rect(center=pos)
-        self.life = 500
-
-    def update(self):
-        self.life -= 1
-        if self.life <= 0:
-            self.kill()
 
 
 class Team:
@@ -2205,6 +2460,7 @@ class Team:
 
     def __init__(self, team_num: int, c: int, p: int, ground_group: pygame.sprite.Group):
         self.team_num = team_num
+        self.colors = {1: (255, 166, 0, 255), 0: (0, 187, 255, 255)}.get(team_num, (221, 0, 255, 255))
         self.pilot = Pilot_Controller(p, self)
         self.controller = Ground_Controller(c, self)
         self.captured_land = pygame.sprite.Group()
@@ -2219,7 +2475,7 @@ class Team:
         self.air_defences = pygame.sprite.Group()
         self.radar_targets = pygame.sprite.Group()
         self.attack_points = pygame.sprite.Group()
-        self.plane = pygame.sprite.GroupSingle()
+        self.plane = pygame.sprite.Group()
         self.ordnances = pygame.sprite.Group()
 
         self.island = Main_Island(self, ground_group)
@@ -2255,12 +2511,14 @@ class Team:
                                       key=lambda d: dis_to(d.rect.center, target.rect.center)))
         for a_d in sorted_defences:
             a_d: Long_Range_SAM | Medium_Range_SAM | CWIS
-            if type(target) == Player and type(a_d) in no_planes:
+            if isinstance(target, Player) and type(a_d) in no_planes:
                 continue
-            if type(target) != Player and type(a_d) in only_planes:
+            if not isinstance(target, Player) and type(a_d) in only_planes:
                 continue
             if dis_to(a_d.rect.center, target.rect.center) <= a_d.max_range and a_d.fire_timer > a_d.reload_time:
-                return a_d
+                if self.money - a_d.ammo_cost >= 0:
+                    self.money -= a_d.ammo_cost
+                    return a_d
         return None
 
     def target_dealt_with(self, target) -> bool:
@@ -2271,18 +2529,18 @@ class Team:
         self.attack_points.draw(screen)
         self.plane.draw(screen)
 
-    def update(self):
+    def update(self, line_layer):
         self.money_timer += 1
         if self.money_timer % self.collection_time == 0:
             self.collect_money()
         if self.pilot.joystick is not None:
             self.pilot.handle_keys()
         if self.controller is not None and self.controller.joystick is not None and self.controller.joystick.connection:
-            self.controller.handle_keys()
+            self.controller.handle_keys(line_layer=line_layer)
         self.radar_targets.empty()
         self.vehicles.update()
         self.attack_points.update()
-        self.plane.update()
+        self.plane.update(plane=True)
 
         for target in self.radar_targets:
             if self.target_dealt_with(target):
@@ -2342,8 +2600,8 @@ def main(c0=None, p0=None, c1=None, p1=None):
         line_layer = pygame.Surface((1920, 1080), pygame.SRCALPHA, 32)
 
         # Updates
-        team0.update()
-        team1.update()
+        team0.update(line_layer)
+        team1.update(line_layer)
         non_traceables.update()
         ground_group.update()
         ui_layer.update()
@@ -2353,6 +2611,7 @@ def main(c0=None, p0=None, c1=None, p1=None):
         # Visual
         screen.fill((1, 201, 250))
         ground_group.draw(screen)
+        screen.blit(line_layer, (0, 0))
         non_traceables.draw(screen)
         explosion_group.draw(screen)
         team0.draw()
@@ -2361,8 +2620,7 @@ def main(c0=None, p0=None, c1=None, p1=None):
         ui_layer.draw(screen)
 
         # Text
-        draw_on(screen, f"{round(clock.get_fps())}fps", f"{team0.money}",
-                f"{team0.money_timer % team0.collection_time}", f"{non_traceables}")
+        draw_on(screen, f"{round(clock.get_fps())}fps")
 
         # Screen fit
         display.blit(
@@ -2433,6 +2691,7 @@ def settings() -> dict[int, Pointer]:
                                          Bunker,
                                          Search_Radar,
                                          Grad,
+                                         Cruise_Missile_Launcher,
                                          Long_Range_SAM,
                                          Medium_Range_SAM,
                                          CWIS,
@@ -2477,11 +2736,13 @@ def settings() -> dict[int, Pointer]:
                 ("repair_cooldown", 30.0),
                 ("repair_multiplier", 0.05),
                 ("max_range", 25.0),
+                ("angle_limit", 2.5),
                 ("reload_time", 10.0),
                 ("income", 2.5),
                 ("plane_delay", 30.0),
                 ("money", 50.0),
                 ("collection_time", 30.0),
+                ("ammo_cost", 5.0)
             )
             valid_atts = tuple(filter(lambda a: hasattr(item, a[0]), all_atts))
             for j, content in enumerate(valid_atts):
