@@ -1099,9 +1099,9 @@ class Player(Plane):
         if weapon is not None and self.controller.team.buy(weapon.price):
             cur.data.load(weapon(*args))
 
-    def face_to(self, ang, speed=5.0):
-        if not (0, 0) == ang:
-            angle = dir_to((0, 0), ang)
+    def face_to(self, vec, speed=5.0):
+        if not (0, 0) == vec:
+            angle = dir_to((0, 0), vec)
             self.angle += math.sin(math.radians(angle - self.angle)) * speed
 
     def destroy_guis(self):
@@ -2237,8 +2237,8 @@ class Cruise_Missile_Launcher(Vehicle, Path_Guided_Fire):
         self.controller: Ground_Controller
         self.spawn_gui_on_click()
         self.take_damage(35)
-        if self.life_span % self.reload_time == 0 and self.launch_permission and self.controller.team.buy(
-                self.ammo_cost) and not self.disabled:
+        if self.life_span % self.reload_time == 0 and self.launch_permission and not self.disabled and self.controller.team.buy(
+                self.ammo_cost):
             non_traceables.add(Path_Guided_Missile(self.rect.center,
                                                    self.controller,
                                                    Path_Guided_Fire.Path(*self.positions)))
@@ -2581,7 +2581,7 @@ class Vads(Vehicle):
         def damage_target(bullet):
             bullet.target.health -= 1
 
-        if self.target and self.controller.team.buy(self.ammo_cost) and not self.disabled:
+        if self.target and not self.disabled and self.controller.team.buy(self.ammo_cost):
             non_traceables.add(
                 Bullet(self.controller, self.rect.center,
                        dir_to(self.rect.center, self.predicted_los(self.target)), target=self.target,
@@ -3245,9 +3245,6 @@ def game():
 
 
 if __name__ == "__main__":
-    # start_menu()
-    # game()
-    Team.money = 10000
-    main(c0=0, p1=1, plane1="SU27")
+    game()
     pygame.quit()
     sys.exit()
